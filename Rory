@@ -1,0 +1,1038 @@
+#! /bin/bash
+
+usage ( ) 
+{
+	echo $0 $* > /var/log/Rory/$$.call
+	echo -e "Rory - super hot script for installing and managing installations"
+	echo -e "\tRory install <-h hostname[,hostname...]> <-m mac[,mac...]> <-p profile[:profile...][,profile[:profile...]...]> [-i ip | -s segment]"
+	echo -e "\tRory add-segment <-n netmask> <-g gateway> <-m method> <-p path> <-v vlan> [-f freeAddressFile] [-a (auto) [-r (range)]] segment"
+	echo -e "\tRory add-os os template"
+	echo -e "\tRory list -p|-o|-s"
+	echo -e "\tRory dhcp [-f] (force) [-g gateway] interface"
+	echo -e "\tRory pxeos -a [<-m method> <-l location> <-s server>] os_name"
+	echo -e "\tRory pxeos -l"
+	echo -e "\tRory pxeos -d os_name"
+	echo -e "\tRory pxeboot -a <-o os> <-k kickstart> <-i ip | -m mac>"
+	echo -e "\tRory pxeboot -l"
+	echo -e "\tRory pxeboot -d ip"
+	echo -e "\tRory distributeRACKeys (-h hostname | -i ip)"
+	echo -e "\tRory wakeup (-h hostname | -i ip)"
+	exit 1
+}
+
+pxeosAdd ( ) {
+	if	[ `ls $pxelinux_root | grep -q -e "^$os$" ; echo $?` -eq 0 ]
+	then	echo "error: os already exists"
+		exit 9
+	fi
+	
+	mkdir $pxelinux_root/$os
+	if	[ "$method" != "" ] && [ "$location" != "" ] && [ "$server" != "" ]
+	then	case $method in
+			'http'|'HTTP')	
+					echo "url --url http://$server/$location" > $pxelinux_root/$os/anaconda.ks.cfg
+					echo "method=http://$server$location" >> /tmp/method
+					cd $pxelinux_root/$os
+					wget http://$server/$location/images/pxeboot/vmlinuz > /dev/null
+					if	[ $? -ne 0 ]
+					then	kernel=`grep -e "^\s*kernel" /boot/grub/grub.conf | head -1 | sed -e 's%^\s*kernel\s\(/[^#\s]*vmlinuz[_-\.a-zA-Z0-9]*\).*$%\1%'`
+						cp /boot$kernel $pxelinux_root/$os/vmlinuz
+					fi
+					wget http://$server/$location/images/pxeboot/initrd.img > /dev/null
+					if	[ $? -ne 0 ]
+					then	initrd=`grep -e "^\s*initrd" /boot/grub/grub.conf | head -1 | sed -e 's%^\s*initrd\s\(/[^#\s]*initramfs[_-\.a-zA-Z0-9]*\).*$%\1%'`
+						cp /boot$initrd $pxelinux_root/$os/initrd.img
+					fi 
+					cd - ;;
+			'nfs'|'NFS')	
+					echo "nfs --server $server --dir $location" > $pxelinux_root/$os/anaconda.ks.cfg
+					echo "method=nfs:$server:$location" > /tmp/method
+					mkdir /mnt/temp 2> /dev/null
+					mount.nfs $server:$location /mnt/temp
+					return_value=$?
+					[ $return_value -ne 0 ] && exit $return_value					
+					ls /mnt/temp/images/vmlinuz
+					if	[ $? -eq 0 ]
+					then	cp /mnt/temp/images/vmlinuz $pxelinux_root/$os/
+					else	kernel=`grep -e "^\s*kernel" /boot/grub/grub.conf | head -1 | sed -e 's%^\s*kernel\s\(/[^#\s]*vmlinuz[_-\.a-zA-Z0-9]*\).*$%\1%'`
+						cp /boot$kernel $pxelinux_root/$os/vmlinuz
+					fi
+					ls /mnt/temp/images/initrd.img
+					if	[ $? -eq 0 ]
+					then	cp /mnt/temp/images/initrd.img $pxelinux_root/$os/
+					else	initrd=`grep -e "^\s*initrd" /boot/grub/grub.conf | head -1 | sed -e 's%^\s*initrd\s\(/[^#\s]*initramfs[_-\.a-zA-Z0-9]*\).*$%\1%'`
+						cp /boot$initrd $pxelinux_root/$os/initrd.img
+					fi ;;
+			*)		
+					echo "error: unsupported pxe method $method"
+					exit 7
+			esac
+		echo -e "" >> $pxelinux_root/pxelinux.cfg/default
+		echo -e "label: $os" >> $pxelinux_root/pxelinux.cfg/default
+		echo -e "\tkernel $os/vmlinuz" >> $pxelinux_root/pxelinux.cfg/default
+		echo -e -n "\tappend initrd=$os/initrd.img ip=dhcp " >> $pxelinux_root/pxelinux.cfg/default
+		[ -f /tmp/method ] && cat /tmp/method >> $pxelinux_root/pxelinux.cfg/default
+		echo -e "\n" >> $pxelinux_root/pxelinux.cfg/default
+		rm -f /tmp/method 2> /dev/null
+	else	kernel=`grep -e "^\s*kernel" /boot/grub/grub.conf | head -1 | sed -e 's%^\s*kernel\s\(/[^#\s]*vmlinuz[_-\.a-zA-Z0-9]*\).*$%\1%'`
+	        cp /boot$kernel $pxelinux_root/$os/vmlinuz
+	        initrd=`grep -e "^\s*initrd" /boot/grub/grub.conf | head -1 | sed -e 's%^\s*initrd\s\(/[^#\s]*initramfs[_-\.a-zA-Z0-9]*\).*$%\1%'`
+	        cp /boot$initrd $pxelinux_root/$os/initrd.img
+	        echo -e "" >> $pxelinux_root/pxelinux.cfg/default
+	        echo -e "label: $os" >> $pxelinux_root/pxelinux.cfg/default
+	        echo -e "\tkernel $os/vmlinuz" >> $pxelinux_root/pxelinux.cfg/default
+	        echo -e "\tappend initrd=$os/initrd.img ip=dhcp " >> $pxelinux_root/pxelinux.cfg/default
+	fi
+}
+
+pxeosList ( )
+{
+	grep -e "^\s*label" $pxelinux_root/pxelinux.cfg/default | sed -e 's/^.*label[:\s ]*//'
+}
+
+pxeosDel ( )
+{
+	[ -d $pxelinux_root/$os ] && rm -rf $pxelinux_root/$os
+	if	[ `grep -q "^\s*label[:\s ]*$os" $pxelinux_root/pxelinux.cfg/default ; echo $?` -eq 0 ]
+	then	from_line=$((`grep -n "^\s*label[:\s ]*$os" $pxelinux_root/pxelinux.cfg/default | cut -d: -f1`-1))
+		up_until=$((`grep -n "^\s*label[:\s ]*$os" $pxelinux_root/pxelinux.cfg/default | cut -d: -f1`+3))
+		sed -i -e "$from_line,${up_until}d" $pxelinux_root/pxelinux.cfg/default
+	fi
+}
+
+pxeos ( )
+{
+	pxelinux_root=`cat /etc/xinetd.d/tftp | grep -e "^[^#]*server_args" | cut -d= -f2 | sed -e 's%^[^/]*/%/%'`/pxelinux
+	while	[ $# -gt 0 ]
+	do	case $1 in
+		'-a')	
+			shift
+			while   [ $# -gt 0 ]
+			do	case $1 in
+				'-i')	
+					information=$2
+					shift 2;;
+				'-m')	
+					method=$2
+					shift 2;;
+				'-s')	
+					server=$2
+					shift 2;;
+				'-l')	
+					location=$2
+					shift 2;;
+				*)	
+					if	[ $# -ne 1 ]
+					then 	echo "possibly internal error"
+						echo "Rory pxeos -a was called with wrong parameters: $@"
+						usage
+						exit $?
+					else	os=$1
+						shift
+					fi ;;
+				esac
+			done
+			pxeosAdd ;;
+		'-l')	
+			shift
+			if	[ $# -ne 0 ]
+			then	echo "possibly internal error"
+				echo "Rory pxeos -l was called with wrong parameters: $@"
+				usage
+				exit $?
+			fi
+			pxeosList $@;;
+		'-d')	
+			if	[ $# -ne 2 ]
+			then	echo "possibly internal error"
+				echo "Rory pxeos -d was called with wrong parameters: $@"
+				usage
+				exit $?
+			fi
+			os=$2
+			shift 2
+			pxeosDel ;;
+		*)	
+			echo "internal error: pxos was called with arguemnts $@"
+			exit 500 ;;
+		esac
+	done
+}
+
+ipToHex ( )
+{
+	hex_ip=""
+	for octata in `echo $1 | sed -e 's/\./ /g'`
+	do	if	[ `echo "ibase=10;obase=16;$octata" | bc | wc -c` -eq 3 ]	# wc -c add one character for unknown reasone
+		then	hex_ip=$hex_ip`echo "ibase=10;obase=16;$octata" | bc`
+		else	hex_ip=${hex_ip}0`echo "ibase=10;obase=16;$octata" | bc`
+		fi
+	done
+	echo $hex_ip
+}
+
+hexToIp ( )
+{
+	hex_ip=""
+	for octata in `echo $1 | sed -e 's/\([0-9A-Z][0-9A-Z]\)/\1 /g'`
+	do	hex_ip=$hex_ip.`echo "ibase=16;obase=A;$octata" | bc`
+	done
+	hex_ip=`echo $hex_ip | sed -e 's/^\.//'`
+}
+
+pxebootAdd ( )
+{
+	if	[ $# -ne 2 ]
+	then	usage
+		exit 1
+	fi
+
+	case $1 in
+		'-i')	
+			ip=$2
+			target=`ipToHex $ip`
+			shift 2 ;;
+		'-m')	
+			mac=$2			
+			target=`echo 01-$mac | sed 's/:/-/g'`
+			shift 2 ;;
+	esac
+	
+	echo -e "default $os\n"  > $pxelinux_root/pxelinux.cfg/$target
+	echo -e "label $os" >> $pxelinux_root/pxelinux.cfg/$target
+	echo -e "\tkernel $os/vmlinuz" >> $pxelinux_root/pxelinux.cfg/$target
+	
+	if [[ $os =~ "rhel7" ]]; then
+		echo -e "\tappend initrd=$os/initrd.img ks=$kickstart" >> $pxelinux_root/pxelinux.cfg/$target
+	else
+		echo -e "\tappend initrd=$os/initrd.img ks=$kickstart" >> $pxelinux_root/pxelinux.cfg/$target
+	
+	fi
+}
+
+pxebootList ( )
+{
+	ls $pxelinux_root/pxelinux.cfg/ | grep -v -e default -e "^01-" | while read hex
+	do	hexToIp $hex
+		echo $hex_ip
+	done
+	ls $pxelinux_root/pxelinux.cfg/ | grep -e "^01-" | while read mac
+	do	echo $mac | sed 's/^01-//'
+	done
+}
+
+pxebootDel ( )
+{
+	if	[ $# -ne 2 ]
+	then	usage
+		exit 1
+	fi
+	case $1 in
+		'-i')
+			$ip=$2
+			target=`ipToHex $ip`
+			shift 2 ;;
+		'-m')
+			mac=$2
+			target=`echo $mac | sed 's/^01-//'`
+			shift 2 ;;
+		*)
+			usage
+			exit 1 ;;
+	esac
+
+	rm -f $pxelinux_root/pxelinux.cfg/$target
+}
+
+pxeboot ( )
+{
+	echo pxeboot $@
+	pxelinux_root=`cat /etc/xinetd.d/tftp | grep -e "^[^#]*server_args" | cut -d= -f2 | sed -e 's%^[^/]*/%/%'`/pxelinux
+	while	[ $# -gt 0 ]
+	do	case $1 in
+		'-a')	
+			shift
+			while	[ $# -gt 0 ]
+			do	case $1 in
+				'-k')	
+					kickstart=$2
+					shift 2 ;;
+				'-o')	
+					os=$2
+					shift 2 ;;
+				'-m'|'-i')
+					pxeindentifier=$1" "$2
+					shift 2 ;;
+				*)	
+					if	[ $# -ne 0 ]
+					then	echo "possibly internal error"
+						echo "Rory pxeboot -a was called with wrong parameters: $@"
+						usage
+						exit $?
+					fi ;;
+				esac
+			done
+			pxebootAdd $pxeindentifier;;
+		'-l')	
+			shift
+			if	[ $# -ne 0 ]
+			then	echo "possibly internal error"
+				echo "Rory pxeboot -l was called with wrong parameters: $@"
+				usage
+				exit $?
+			fi
+			pxebootList  ;;
+		'-d')	
+			shift
+			if	[ $# -ne 2 ]
+			then	echo "possibly internal error"
+				echo "Rory pxeboot -d was called with wrong parameters: $@"
+				usage
+				exit $?
+			fi
+			pxeindentifier=$1" "$2		
+			pxebootDel $pxeindentifier
+			shift 2 ;;
+		*)	
+			echo "internal error: pxos was called with arguemnts $@"
+			exit 500 ;;
+		esac
+	done
+}
+
+parsRoryConf ( )
+{
+	# Check if Rory.conf exists
+	if	! [ -f /etc/Rory.conf ]
+	then	exit 2
+	fi
+
+	while read conf	
+	do	conf=`echo $conf | sed -e 's/#.*//g' | sed -e '/^$/d'`
+		if	! [ "$conf" == "" ]
+		then	case `echo $conf | cut -f1 -d=` in
+				'KS_DIR')	
+						ks_dir=`echo $conf | cut -f2 -d=` ;;
+				'DOMIAN_NAME')
+						domain_name=`echo $conf | cut -f2 -d=` ;;
+				'NAMESERVER')	
+						nameserver=`echo $conf | cut -f2 -d=` ;;
+				'SEGMENT_FILE') 
+						segment_file=`echo $conf | cut -f2 -d=` ;;
+				'OS_FILE')	
+						os_file=`echo $conf | cut -f2 -d=` ;;
+				'PROFILE_FILE')	
+						profile_file=`echo $conf | cut -f2 -d=` ;;
+				'RAC_DIR')
+						rac_dir=`echo $conf | cut -f2 -d=` ;;
+				'RAC_PRIVATE_VLAN')
+						rac_private_vlan=`echo $conf | cut -f2 -d=` ;;
+				'WAKEUP_DIR')
+						wakeup_dir=`echo $conf | cut -f2 -d=` ;;
+				'DOMAIN_NAME')
+						domain_name=`echo $conf | cut -f2 -d=` ;;
+				*)		
+						echo "error in /etc/Rory.conf"
+						echo "bad or unsupported option"
+						exit 3 ;;
+			esac
+		fi
+	done < /etc/Rory.conf
+}
+
+parsSegmentFile ( )
+{
+	# Expecting to get only one argument: desired segment
+
+	if	[ $# -ne 1 ]
+	then	echo "internal error"
+		echo "parsSegmentFile was called with $# arguments: $*"
+		exit 500
+	fi
+	
+	segment=$1
+
+	if	! [ -f $segment_file ]
+	then	echo "segment file $segment_file was not found"
+		exit 4
+	fi
+
+	if	[ `grep -e "^$segment," $segment_file | wc -l` -gt 1 ]
+	then	echo "too many definitions of $segment in $segment_file"
+		exit 5
+	elif	[ `grep -e "^$segment," $segment_file | wc -l` -lt 1 ]
+	then	echo "no definition of $segment in $segment_file"
+		exit 5
+	fi
+
+	netmask=`grep -e "^$segment," $segment_file | cut -d, -f2`
+	gateway=`grep -e "^$segment," $segment_file | cut -d, -f3`
+	method=`grep -e "^$segment," $segment_file | cut -d, -f4`
+	vlan=`grep -e "^$segment," $segment_file | cut -d, -f5`
+	addressfile=`grep -e "^$segment," $segment_file | cut -d, -f6`
+}
+
+parsProfileFile ( )
+{
+	# Expecting to get only one argument: desired profile
+
+	if	[ $# -ne 1 ]
+	then	echo "internal error"
+		echo "parsProfileFile was called with $# arguments: $*"
+		exit 500
+	fi
+
+	profile=$1
+	
+	if	! [ -f $profile_file ]
+	then	echo "profile file $profile_file was not found"
+		exit 4
+	fi
+
+	if	[ `grep -e "^[^#]*$profile," $profile_file | wc -l` -gt 1 ]
+	then	echo "too many definitions of $profile in $profile_file"
+		exit 5
+	elif	[ `grep -e "^[^#]*$profile," $profile_file | wc -l` -lt 1 ]
+	then	echo "no definition of $profile in $profile_file"
+		exit 5
+	fi
+
+	os=`grep -e "^[^#]*$profile," $profile_file | cut -d, -f2`
+	ks_adjustments=`grep -e "^[^#]*$profile," $profile_file | cut -d, -f3`
+	nic_number=`grep -e "^[^#]*$profile," $profile_file | cut -d, -f4`
+}
+
+parsOsFile ( )
+{
+	if	[ $# -ne 0 ]
+	then	echo "internal error"
+		echo "parsOsFile was called with $# arguments: $*"
+		exit 500
+	fi
+	
+	if	! [ -f $os_file ]
+	then	echo "profile file $os_file was not found"
+		exit 4
+	fi
+
+	if	[ `grep -e "^[^#]*$os" $os_file | wc -l` -gt 1 ]
+	then	echo "too many definitions of $os in $os_file"
+		exit 5
+	elif	[ `grep -e "^[^#]*$os" $os_file | wc -l` -lt 1 ]
+	then	echo "no definition of $os in $os_file"
+		exit 5
+	fi
+
+	template=`grep -e "^[^#]*$os" $os_file | cut -d, -f2`
+	iso_path_http=`grep -e "^[^#]*$os" $os_file | cut -d, -f3`
+	iso_path_nfs=`grep -e "^[^#]*$os" $os_file | cut -d, -f4`
+}
+
+applyProfileAdjustment ( )
+{
+	backupProfile=$profile
+	i=1
+	while	[ "`echo ${backupProfile}: | cut -d: -f$i`" != "" ]
+	do	profile=`echo $backupProfile | cut -d: -f$i`
+		parsProfileFile $profile
+
+		if	[ `grep -q -e "^%packages" $ks_dir/$hostname.ks ; echo $?` -ne 0 ]
+		then	echo -e '%packages' >> $ks_dir/$hostname.ks
+		fi
+		if	[ `grep -q -e "^%post" $ks_dir/$hostname.ks ; echo $?` -ne 0 ]
+		then	echo -e '%post' >> $ks_dir/$hostname.ks
+		fi
+		if	[ `grep -q -e "^%packages" $ks_adjustments ; echo $?` -ne 0 ]
+		then	echo -e '%packages' >> $ks_adjustments
+		fi
+		if	[ `grep -q -e "^%post" $ks_adjustments ; echo $?` -ne 0 ]
+		then	echo -e '%post' >> $ks_adjustments
+		fi
+
+		sed '/%packages/b loop ; b exit ; :loop N ; s/%packages.*/%packages/ ; b loop ; :exit' $ks_adjustments | sed '/%packages/d' | while read body
+		do 	sed -i "s@%packages@$body\n%packages@" $ks_dir/$hostname.ks
+		done
+	
+		sed ':prepackages N ; /%packages/b delete ; b prepackages ; :delete d; ' $ks_adjustments  | sed '/%post/b loop ; b exit ; :loop N ; s/%post.*/%post/ ; b loop ; :exit' | sed '/%post/d' | while read package
+		do 	sed -i "s/%post/$package\n%post/" $ks_dir/$hostname.ks
+		done
+	
+		sed ':prepost N ; /%post/b delete ; b prepost ; :delete d;' $ks_adjustments >> $ks_dir/$hostname.ks
+
+		i=$(($i+1))
+	done
+
+	profile=$backupProfile
+
+	if 	grep -q '%end' $ks_dir/$hostname.ks
+	then	sed -i 's/%end//' $ks_dir/$hostname.ks
+		sed -i 's/\(%post.*\)/%end\n\1/' $ks_dir/$hostname.ks
+		echo '%end' >> $ks_dir/$hostname.ks
+	fi
+
+}
+
+createKickstartFile ( )
+{
+	if	! [ -f $template ]
+	then	echo "error: template $template not found"
+		exit 6
+	fi
+
+	cp $template $ks_dir/$hostname.ks
+	case $method in 
+		'http')	
+			sed -i -e "s%@@@METHOD@@@%url --url $iso_path_http%" $ks_dir/$hostname.ks ;;
+		'nfs')	
+			sed -i -e "s%@@@METHOD@@@%nfs --server `echo $iso_path_nfs | cut -d: -f1` --dir `echo $iso_path_nfs | cut -d: -f2`%" $ks_dir/$hostname.ks ;;
+		*)	
+			sed -i -e "s%@@@METHOD@@@%url --url $iso_path_http%" $ks_dir/$hostname.ks ;;
+	esac
+
+	if	[ $ip == "dhcp" ]
+	then	sed -i -e "s%--bootproto.*$%--bootproto dhcp --hostname $hostname%" $ks_dir/$hostname.ks
+	else	sed -i -e "s%@@@IP@@@%$ip%" $ks_dir/$hostname.ks
+		sed -i -e "s%@@@GATEWAY@@@%$gateway%" $ks_dir/$hostname.ks
+		sed -i -e "s%@@@NETMASK@@@%$netmask%" $ks_dir/$hostname.ks
+		sed -i -e "s%@@@NAMESERVER@@@%$nameserver%" $ks_dir/$hostname.ks
+		sed -i -e "s%@@@HOSTNAME@@@%$hostname%" $ks_dir/$hostname.ks
+	fi
+
+	applyProfileAdjustment $profile
+}
+
+setDHCP ( )
+{
+	echo "Doron is testing something. this message will be deleted shortly"
+	interface=`ip addr show | sed -n -e ":eth /^[0-9]*:/b search ; b exit ; :search N ; /inet\s*$segment/b print ; /inet/b exit ; b search ; :print p; :exit" | head -1 | cut -d: -f2 | cut -d' ' -f2 | sed 's/@.*//'`
+
+	if	[ "$interface" != "" ] && [ `grep -q $interface /etc/sysconfig/dhcpd ; echo $?` -ne 0 ]
+	then	sed -i -e "s/^[^#]*DHCPDARGS=\"/DHCPDARGS=\"$interface /g" /etc/sysconfig/dhcpd
+	fi
+
+	if	[ `grep -q -e "^[^#]*subnet\s*$segment" /etc/dhcp/dhcpd.conf ; echo $?` -ne 0 ]
+	then	echo "error: subnet $segment definition wasn't found in /etc/dhcp/dhcpd.conf"
+		exit 8
+	fi
+
+	sleep $[ ($RANDOM %10 ) +1 ]
+	i=0
+
+        while ! mkdir /var/run/Rory > /dev/null 2>&1
+        do
+		if	[ $i -ge 10 ]
+		then	echo "error: Rory has been locked for too long"
+			exit 13
+		elif	[ $i -ge 7 ]
+		then	echo "warning: Rory seems to be stuck. help her. she's a damsel in distress"
+		fi
+		i=$(($i+1))
+                sleep 3
+        done
+
+	# Remove old definition
+	sed -i -e "/host\s*$hostname/b host ; b exit ; :host /}/b delete ; N ; b host ; :delete d ; :exit" /etc/dhcp/dhcpd.conf
+	sed -i -e "s/#.*$// ; /^\(\s\|\)subnet\s$segment[^0-9]/b subnet ; b exit ; :subnet N; /^[^{]*{\([^{}]*\|[^{}]*{[^{}]*}[^{}]*\)*}/b delete ; b subnet ; :delete s/\(^[^{]*{\([^{}]*\|[^{}]*{[^{}]*}[^{}]*\)*\)}/\1\n\thost $hostname {\n\t\thardware ethernet\t$mac;\n\t\tfixed-address\t$ip;\t\n}\n}/ ; :exit" /etc/dhcp/dhcpd.conf
+
+	rmdir /var/run/Rory
+}
+
+setPXE ( )
+{
+	if [ `pxeos -l | grep -q $os ; echo $?` -ne 0 ]
+	then	echo `pxeos -l `
+		echo "error: os $os doesn't exists"
+		exit 11
+	fi
+
+	kickstart=http://`hostname --long`/kickstart/$hostname.ks
+	pxeboot -a -o $os -k $kickstart -m $mac
+}
+
+getIP ( )
+{
+	if 	[ "$ip" != "" ]
+	then
+		# Getting segment from command line given ip	
+		segment=`echo $ip | sed -e 's/\.[^\.]*$//'`
+	else
+		# Getting ip from DNS
+		ip=`nslookup $hostname | grep -A 2 -e "Name.*$hostname" | grep Address | cut -d' ' -f2`
+		if 	[ -z "$ip" ]
+		then
+			# If segment is given, get ip from segment file
+			if	[ "$segment" != "" ]
+			then	if	[ "$segmentfile" == "" ]
+				then	echo "no definition of segment"
+					exit 16
+				fi
+				flag=0
+				while	[ $flag -eq 0 ]
+				do	if	[ `wc -l $segmentfile` -eq 0 ] 
+					then	echo "no free IP in this segment"
+						exit 16
+					fi
+					ip=`head -1 $segmentfile`
+					if	[ `ping -c 3 -i 1 -W 3 $ip > /dev/null 2>&1 ; echo $?` -eq 0] && [ `nslookup $hostname | grep -A 2 -e "Name.*$hostname" | grep Address | cut -d' ' -f2` != "" ]
+					then	flag=1
+					else	sed -i '1 d' $segmentfile
+					fi
+				done
+			else
+				ip="dhcp"
+			fi
+		fi
+
+	fi
+}
+
+installSingleHost ( )
+{
+	getIP $hostname
+	
+	# ip could not be empty by now (by segment or DNS).
+	# Getting the segment by the ip.
+	if [ $ip != "dhcp" ]
+	then
+		segment=`echo $ip | sed -e 's/\.[^\.]*$//'`
+	fi
+	[ "$segment" != "" ] && parsSegmentFile $segment
+	parsProfileFile `echo $profile | cut -d: -f1`
+	parsOsFile
+	rm -rf /etc/Rory.d/wakeup/$hostname
+	createKickstartFile
+	if	[ "$ip" != "dhcp" ]
+	then	
+		setDHCP
+		service dhcpd restart
+	fi
+	setPXE
+}
+
+injectRACAdjustments ( )
+{
+	if	[ "`grep -q '%post' $ks_dir/$hostname.ks ; echo $?`" -ne 0 ]
+	then	echo "%post" >> $ks_dir/$hostname.ks
+	fi
+
+	public_address=`nslookup $hostname | sed -n "/$hostname/ N ; s/Name.*Address:[^0-9]*//p"`
+	vip_address=`nslookup $hostname-vip | sed -n "/$hostname/ N ; s/Name.*Address:[^0-9]*//p"`
+	private_address=`echo $public_address | sed 's/^[0-9]*/10/'`
+	sed -i -e "/^network.*[ =\s]eth0\s/a \\network --device eth1 --bootproto static --ip $private_address --netmask 255.255.255.0\\" $ks_dir/$hostname.ks
+
+	echo -e "$public_address\t$hostname" >> $rac_dir/$hostnames/hosts
+	echo -e "$vip_address\t$hostname-vip" >> $rac_dir/$hostnames/hosts
+	echo -e "$private_address\t$hostname-prv" >> $rac_dir/$hostnames/hosts
+}
+
+installRAC ( )
+{
+	mkdir $rac_dir/$hostnames > /dev/null
+	sed -i "/$hostnames/d" $rac_dir/members.list
+	echo $hostnames >> $rac_dir/members.list
+	echo -e "127.0.0.1\tlocalhost localhost.localdomain" > $rac_dir/$hostnames/hosts
+
+	grep -q rac_dir /etc/httpd/conf.d/Rory.conf
+	if	[ $? -ne 0 ]	
+	then	sed -i "1 i\\Alias /rac_dir \"$rac_dir\"\\ " /etc/httpd/conf.d/Rory.conf
+	fi
+
+	grep -q "<Files \"/rac_dir/wellcome.php\">" /etc/httpd/conf.d/Rory.conf
+	if	[ $? -ne 0 ]
+	then	echo -e "" >> /etc/httpd/conf.d/Rory.conf
+		echo -e "<Files \"/rac_dir/wellcome.php\">" >> /etc/httpd/conf.d/Rory.conf
+		echo -e "\tAllowOverride None" >> /etc/httpd/conf.d/Rory.conf
+		echo -e "\tOrder allow,deny" >> /etc/httpd/conf.d/Rory.conf
+		echo -e "\tAllow from all" >> /etc/httpd/conf.d/Rory.conf
+		echo -e "</Files>" >> /etc/httpd/conf.d/Rory.conf
+	fi
+
+	racCounter=1
+	while	[ $racCounter -le `echo $hostnames | sed 's/[^,]//g' | wc -c` ]
+	do	hostname=`echo $hostnames | cut -d, -f$racCounter`
+		mac=`echo $macs | cut -d, -f$racCounter`
+		profile=`echo $profiles | cut -d, -f$racCounter`
+		installSingleHost
+		injectRACAdjustments
+		racCounter=$(($racCounter+1))
+	done
+	racCounter=1
+	while	[ $racCounter -le `echo $hostnames | sed 's/[^,]//g' | wc -c` ]
+	do	hostname=`echo $hostnames | cut -d, -f$racCounter`
+		echo -e "echo > /etc/hosts << EOF" >> $ks_dir/$hostname.ks
+		cat $rac_dir/$hostnames/hosts >> $ks_dir/$hostname.ks
+		echo -e "EOF" >> $ks_dir/$hostname.ks
+		racCounter=$(($racCounter+1))
+	done
+
+}
+
+install ( )
+{
+	while	[ $# -gt 0 ]
+	do	case $1 in 
+		'-h')	
+			hostnames=$2
+			shift 2 ;;
+		'-m')	
+			macs=$2
+			shift 2 ;;
+		'-p')	
+			profiles=$2
+			shift 2 ;;
+		'-i')	
+			ip=$2
+			shift 2 ;;
+		'-s')
+			segment=$2
+			shift 2 ;;
+		*)
+			echo "error: Rory install was called with arguments $@"
+			usage
+			exit $? ;;
+		esac
+	done
+
+	parsRoryConf
+
+	if	[ "$hostnames" == "" ]  || [ "$profiles" == "" ]
+	then	usage
+	fi
+
+	if	[ "`echo $hostnames | sed 's/^[^,]*\(,\|$\)//'`" == "" ] && [ "`echo $macs | sed 's/^[^,]*\(,\|$\)//'`" == "" ]  && [ "`echo $profiles | sed 's/^[^,]*\(,\|$\)//'`" == "" ] 
+	then	hostname=$hostnames
+		mac=$macs
+		profile=$profiles
+		installSingleHost
+	elif	[ "`echo $hostnames | sed 's/[^,]//g' | wc -c`" -ne `echo $macs | sed 's/[^,]//g' | wc -c`  ] || [ "`echo $hostnames | sed 's/[^,]//g' | wc -c`" -ne `echo $profiles | sed 's/[^,]//g' | wc -c`  ] 
+	then	echo "unequal number of installs"
+		exit 12
+	else	installRAC
+	fi
+}
+
+distributeRACKeys ( )
+{
+	hostnames=`grep "\(^\|,\)$hostname\(,\|$\)" $rac_dir/members.list`
+
+	ssh-keyscan $hostname 2> /dev/null > $rac_dir/$hostnames/$hostname.fingerprint
+	cat $rac_dir/$hostnames/$hostname.fingerprint >> /root/.ssh/known_hosts
+	scp $hostname:~oracle/.ssh/id_rsa.pub $rac_dir/$hostnames/$hostname.oracle.rsa
+	scp $hostname:~oragrid/.ssh/id_rsa.pub $rac_dir/$hostnames/$hostname.oragrid.rsa
+	scp $hostname:~root/.ssh/id_rsa.pub $rac_dir/$hostnames/$hostname.root.rsa
+	
+	echo $hostnames | sed 's/,/\n/g' | while read member
+	do	if	! [ -f $rac_dir/$hostnames/$member.fingerprint ]
+		then	exit 0
+		fi
+	done
+
+	cat $rac_dir/$hostnames/*.fingerprint > $rac_dir/$hostnames/fingerprints
+	cat $rac_dir/$hostnames/*.oracle.rsa > $rac_dir/$hostnames/oracle.rsa
+	cat $rac_dir/$hostnames/*.oragrid.rsa > $rac_dir/$hostnames/oragrid.rsa
+	cat $rac_dir/$hostnames/*.root.rsa > $rac_dir/$hostnames/root.rsa
+	cat $rac_dir/$hostnames/root.rsa >> $rac_dir/$hostnames/oracle.rsa
+	cat $rac_dir/$hostnames/root.rsa >> $rac_dir/$hostnames/oragrid.rsa
+
+	for member in `echo $hostnames | sed 's/,/\n/g'`
+	do	scp $rac_dir/$hostnames/hosts $member:/etc/hosts
+		scp $rac_dir/$hostnames/fingerprints $member:/tmp/fingerprints
+		scp $rac_dir/$hostnames/oracle.rsa $member:/tmp/oracle.rsa
+		scp $rac_dir/$hostnames/oragrid.rsa $member:/tmp/oragrid.rsa
+		scp $rac_dir/$hostnames/root.rsa $member:/tmp/root.rsa
+		ssh $member "partprobe ; /usr/local/bin/create_rac_devices.sh -a ; cat /tmp/fingerprints >> ~/.ssh/known_hosts ; cat /tmp/fingerprints >> ~oracle/.ssh/known_hosts ; cat /tmp/fingerprints >> ~oragrid/.ssh/known_hosts ; cat /tmp/oracle.rsa >> ~oracle/.ssh/authorized_keys ; cat /tmp/oragrid.rsa >> ~oragrid/.ssh/authorized_keys ; cat /tmp/root.rsa >> ~root/.ssh/authorized_keys ; restorecon -r ~oragrid/.ssh ~oracle/.ssh"
+		memsize=`ssh $member "grep MemTotal: /proc/memi/fo"` | awk '{print $2}'
+		if	[ -z $memsize]
+		then	echo "error: could not determine memsize" >> ~/install.log
+		elif	[ $memsize -le 8388608 ]
+		then	desiredSwapSize=`echo "$memsize*2" | bc`
+		elif	[ $memsize -le 33554432 ]
+		then	desiredSwapSize=`echo "$memsize*1.5" | bc | sed 's/\..*//'`
+		else	desiredSwapSize=33554432
+		fi
+		ssh $member "lvextend -L ${desiredSwapSize}K /dev/vg00/swaplv >> /root/install.log 2>&1"
+	done
+	
+	exit 0
+}
+
+function wakeup ( )
+{	
+	hostname=""
+	ip=""
+	
+	while	[ $# -gt 0 ]
+	do
+		case $1 in
+			-h)	
+				hostname=$2
+				shift 2 ;;
+			-i)
+				ip=$2
+				shift 2 ;;
+			*)
+				echo "Error: Rory wakeup was called with wrong parameters"
+				usage
+				exit 1 ;;
+		esac
+	done
+	
+	if	[ "$hostname" == "" ] && [ "ip" == "" ]
+	then	echo "Error: Rory wakup was called with no parameters at all"
+			exit 1
+	elif	[ "$hostname" == "" ]
+	then	hostname=`nslookup $ip | grep "name = " | sed 's/^.*=//g ; s/ //g ; s/\..*$//g'`
+	elif	[ "ip" == "" ]
+	then	ip=`nslookup $hostname | sed -n "/$hostname/ N ; s/Name.*Address:[^0-9]*//p"`
+	fi
+
+	parsRoryConf
+	
+	echo $ip > $wakeup_dir/$hostname
+
+	if	[ `grep -q "\(^\|,\)$hostname\(,\|$\)" $rac_dir/members.list; echo $?` -ne 0 ]
+	then	exit 0
+	else	distributeRACKeys
+	fi
+}
+
+
+addsegment ( )
+{
+	parsRoryConf
+
+	aflag=1
+	rflag=1
+	while   [ $# -gt 0 ]
+        do      case $1 in
+                '-n')
+                        netmask=$2
+                        shift 2 ;;
+                '-g')
+                        gateway=$2
+                        shift 2 ;;
+                '-m')
+                        method=$2
+                        shift 2 ;;
+		'-p')
+			path=$2
+			shift 2 ;;
+
+		'-v')   
+			vlan=$2
+			shift 2 ;;
+
+		'-a')	
+			aflag=0
+			shift ;;
+		'-r')
+			rflag=0
+			shift ;;
+                *)
+			if	[ $# -ne 1 ]
+	                then	echo "error: Rory install was called with arguments $@"
+                        	usage
+                        	exit $? 
+			else	segment=$1
+			fi ;;
+                esac
+        done
+
+	echo "$segment,$netmask,$gateway,$method,$vlan" >> /etc/Rory.d/segment.info
+
+	grep -q $segment /etc/dhcp/dhcpd.conf
+	if [ $? -eq 1 ]
+	then  	
+		if	[ rflag -eq 0 ]
+		then	 echo "-r was given but not -a. this is illegal" 
+			usage 
+			exit 1
+		fi
+		echo -e "\n \n" >> /etc/dhcp/dhcpd.conf
+		echo "subnet $segment netmask $netmask {" >> /etc/dhcp/dhcpd.conf
+		echo "option routers		$gateway" >> /etc/dhcp/dhcpd.conf
+		echo "option subnet-mask	$netmask" >> /etc/dhcp/dhcpd.conf
+		echo "option domain-name	$domain_name" >> /etc/dhcp/dhcpd.conf
+		echo "option domain-name-servers	$nameserver" >> /etc/dhcp/dhcpd.conf
+		echo "	}" >> /etc/dhcp/dhcpd.conf
+	fi
+
+	$aflag || exit 0
+	newvlan="/etc/sysconfig/network-scripts/ifcfg-eth0.$vlan"
+	touch $newvlan
+	echo "DEVICE=\"eth0.$vlan\"" > $newvlan
+	echo "BOOTPROTO=\"static\"" >> $newvlan
+	echo "IPADDR=\"$segment.249\"" >> $newvlan
+	echo "IPV6INIT=\"no\"" >> $newvlan
+	echo "NETMASK=\"$netmask\"" >> $newvlan
+	echo "ONBOOT=\"yes\"" >> $newvlan
+	echo "VLAN=\"yes\"" >> $newvlan
+	ifup $newvlan
+
+	sed -i "s/=\"/=\"eth0.$vlan /" /etc/sysconfig/dhcpd
+
+}
+
+list ( ) 
+{
+	parsRoryConf
+
+	format='plain'
+	while	[ $# -gt 0 ]
+	do	case $1 in
+		'-p'|'profile'|'profiles')
+                        action='p'
+                        shift ;;
+                '-o'|'os'|'OS')
+                        action='o'
+                        shift ;;
+                '-s'|'segment'|'segments')
+                        action='s'
+                        shift ;;
+		'--csv')
+			format='csv'
+			shift ;;
+		'--plain')
+			format='plain'
+			shift ;;
+                *)      usage
+                        exit 1 ;;
+		esac
+	done
+
+	case $format in
+	'plain')
+		case $action in
+		'p')
+			sed 's/#.*$// ; /^\s*$/d ; s/,.*$//' $profile_file
+			exit 0 ;;
+		'o')
+			sed 's/#.*$// ; /^\s*$/d ; s/,.*$//' $os_file
+			exit 0 ;;
+		's')
+			sed 's/#.*$// ; /^\s*$/d ; s/,.*$//' $segment_file
+			exit 0 ;;
+		*)
+			echo "internal Rory error"
+			echo "Rory list action=$action format=$format"
+			exit 19 ;;
+		esac ;;
+	'csv')
+		case $action in
+                'p')
+			sed 's/#.*$// ; /^\s*$/d ; s/,.*$/,/' $profile_file | sed ':begin N ; s/\n//g ; s/\s$// ; b begin' | sed 's/,$//'
+                        exit 0 ;;
+                'o')
+                        sed 's/#.*$// ; /^\s*$/d ; s/,.*$/,/' $os_file	| sed ':begin N ; s/\n//g ; s/\s$// ; b begin' | sed 's/,$//'
+                        exit 0 ;;
+                's')
+                        sed 's/#.*$// ; /^\s*$/d ; s/,.*$/,/' $segment_file | sed ':begin N ; s/\n//g ; s/\s$// ; b begin' | sed 's/,$//'
+                        exit 0 ;;
+		*)
+                        echo "internal Rory error"
+                        echo "Rory list action=$action format=$format"
+                        exit 19 ;;
+		esac ;;
+	esac
+}
+
+addsegment ( )
+{
+	addDHCP=0
+	while   [ $# -gt 0 ]
+        do      case $1 in
+                '-n')
+                        netmask=$2
+                        shift 2 ;;
+                '-g')
+                        gateway=$2
+                        shift 2 ;;
+                '-m')
+                        method=$2
+                        shift 2 ;;
+		'-v')
+                        vlan=$2
+                        shift 2;;
+		'-a')
+                        addDHCP=1
+                        shift ;;
+		'-s')
+                        segment=$2
+                        shift 2;;
+                *)
+                        echo "error: Rory install was called with arguments $@"
+                        usage
+                        exit $? ;;
+                esac
+        done
+
+	trimseg=`echo $segment | cut -d"." -f 1-3`
+
+	cat /etc/Rory.d/segment.info | cut -d, -f1 | grep $trimseg > /dev/null
+	if [ $? -eq 0 ]; then
+		echo "error: segment already exists!"
+		exit 22
+	fi
+
+	echo "$trimseg,$netmask,$gateway,$method,$vlan" >> /etc/Rory.d/segment.info
+	
+	if [ "$addDHCP" == "1" ]; then
+
+		cat /etc/dhcp/dhcpd.conf | grep ^subnet | grep $segment > /dev/null
+		if [ $? -eq 0 ]; then
+			echo "error: segment already defined on dhcpd.conf. Assuming OK!"
+			exit 23
+		fi
+
+cat >> /etc/dhcp/dhcpd.conf << EOF
+
+subnet @@SEGMENT@@ netmask @@NETMASK@@ {
+
+option routers          @@GATEWAY@@;
+option subnet-mask      @@NETMASK@@;
+
+next-server $my_ip
+filename "pxelinux/pxelinux.0";
+
+}
+
+EOF
+		sed -i -e "s%@@SEGMENT@@%$segment%" /etc/dhcp/dhcpd.conf
+       		sed -i -e "s%@@NETMASK@@%$netmask%g" /etc/dhcp/dhcpd.conf
+		sed -i -e "s%@@GATEWAY@@%$gateway%" /etc/dhcp/dhcpd.conf
+		/etc/init.d/dhcpd restart
+	fi
+	
+}
+
+echo $0 $* > /tmp/Rory.log.2
+
+case $1 in
+	'install')	
+			shift
+			install $@;;
+	'add-segment')	
+			shift
+			addsegment $@;;
+	'add-os')	
+			shift
+			add-os $@;;
+	'dhcp')		shift
+			dhcp $@;;
+	'pxeboot')	
+			shift
+			pxeboot $@ ;;
+	'pxeos')	
+			shift
+			pxeos $@ ;;
+	'wakeup')
+			shift
+			wakeup $@ ;;
+	'list')
+			shift
+			list $@ ;;
+	*)		
+			usage;;
+esac
+exit 0
+
