@@ -1,11 +1,17 @@
 #! /usr/bin/python
 
-from .rory_entities import RoryHost, RoryProfile
+from .rory_entities import RoryAbstractHost, RoryAbstractProfile
+from time import sleep
 
-class RoryPuppetHost(RoryHost):
-    def __init__(self):
-        self.ssl_public=""
-        self.puppet_master=None
+class RoryPuppetHost(RoryAbstractHost):
+    def __init__(self, ssl_public="", puppet_master=None,
+                 hostgroup="", **kwargs):
+        RoryAbstractHost.__init__(self, **kwargs)
+        self.ssl_public = ssl_public
+        self.puppet_master = puppet_master
+        self.hostgroup = hostgroup
 
-class RoryPuppetProfile(RoryProfile):
-    
+class RoryPuppetProfile(RoryAbstractProfile):
+    def __init__(self, configgroups=[], **kwargs):
+        RoryAbstractProfile.__init__(self, **kwargs)
+        self.configgroups = configgroups

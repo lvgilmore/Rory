@@ -2,13 +2,15 @@
 
 from _ctypes import ArgumentError
 
-class RoryHost():
-    def __init__(self, hostname="", profiles=[],
-                 alter_egos=[]):
+class RoryAbstractHost():
+    def __init__(self, profiles=[]):
         self.hostname = hostname
-        self.profiles = profiles
-        self.alter_egos = alter_egos 
+        self.profiles = profiles 
         
-class RoryProfile():
-    def __init__(self, script= ""):
-        self.script = script
+class RoryAbstractProfile():
+    def __init__(self):
+        pass
+        
+class RorySuperEgo():
+    def __init__(self, alter_egos=[]):
+        self.alter_egos = alter_egos
