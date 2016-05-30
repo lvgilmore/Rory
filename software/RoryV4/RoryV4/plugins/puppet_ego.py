@@ -10,6 +10,9 @@ class RoryPuppetHost(RoryAbstractHost):
         self.ssl_public = ssl_public
         self.puppet_master = puppet_master
         self.hostgroup = hostgroup
+    
+    def self_search(self):
+        pass
 
 class RoryPuppetProfile(RoryAbstractProfile):
     def __init__(self, configgroups=[], **kwargs):
