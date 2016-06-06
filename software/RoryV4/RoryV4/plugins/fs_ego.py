@@ -1,11 +1,25 @@
 #! /usr/bin/python
 
 from .rory_entities import RoryAbstractHost, RoryAbstractProfile
+from commands import getstatusoutput
 
 class RoryFSHost(RoryAbstractHost):
     def __init__(self, primary_vg="fedora", **kwargs):
         RoryAbstractHost.__init__(self, **kwargs)
         self.primary_vg = primary_vg
+    
+    def self_serach(self):
+        candidates = getstatusoutput("ssh root@" + str(self.ip) + " 'vgs --noheadings'")
+    
+    def self_search(self):
+        pass
+    
+    def backend_config(self):
+        pass
+    
+    def node_config(self):
+        pass
+        
 
 class RoryFSProfile(RoryAbstractProfile):
     def __init__(self, fss=[], **kwargs):

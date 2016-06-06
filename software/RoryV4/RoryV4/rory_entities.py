@@ -15,7 +15,16 @@ class RoryAbstractHost():
         else:
             raise ArgumentError("in RoryAbstractHost.__init__: ip: unknown class %s"
                                  % str(ip.__class__))
-        self.profiles = profiles 
+        self.profiles = profiles
+    
+    def self_search(self):
+        pass
+    
+    def backend_config(self):
+        pass
+    
+    def node_config(self):
+        pass
         
 class RoryAbstractProfile():
     def __init__(self):

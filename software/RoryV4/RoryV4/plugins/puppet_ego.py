@@ -13,6 +13,12 @@ class RoryPuppetHost(RoryAbstractHost):
     
     def self_search(self):
         pass
+    
+    def backend_config(self):
+        pass
+    
+    def node_config(self):
+        pass
 
 class RoryPuppetProfile(RoryAbstractProfile):
     def __init__(self, configgroups=[], **kwargs):
