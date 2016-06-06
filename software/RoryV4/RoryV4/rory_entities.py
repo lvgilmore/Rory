@@ -18,6 +18,9 @@ class RoryAbstractHost():
         else:
             raise ArgumentError("in RoryAbstractHost.__init__: ip: unknown class %s"
                                  % str(ip.__class__))
+        
+        # we set my_profiles as an empty array
+        # then we check for each profile if it applies
         self.profiles = []
         for profile in RoryAbstractHost.profiles:
             if profile.am_i:
