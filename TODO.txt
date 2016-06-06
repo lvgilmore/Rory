@@ -1,3 +1,7 @@
 run each ego in different thread
 
+how do you know which profile should apply to the host?
+	I'm thinking about each profile having a boolean function.
+	then we iterate all functions over the host
+
 how do you get puppet's public ssl?

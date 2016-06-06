@@ -5,7 +5,10 @@ from ipaddr import IPAddress
 # from threading import Thread
 
 class RoryAbstractHost():
-    def __init__(self, ip=None, profiles=[]):
+    
+    profiles = []
+    
+    def __init__(self, ip=None):
         if ip is None:
             raise ArgumentError("host must have an IP!")
         elif isinstance(ip, IPAddress):
@@ -15,7 +18,10 @@ class RoryAbstractHost():
         else:
             raise ArgumentError("in RoryAbstractHost.__init__: ip: unknown class %s"
                                  % str(ip.__class__))
-        self.profiles = profiles
+        self.profiles = []
+        for profile in RoryAbstractHost.profiles:
+            if profile.am_i:
+                self.profiles.append(profile)
     
     def self_search(self):
         pass
@@ -27,8 +33,9 @@ class RoryAbstractHost():
         pass
         
 class RoryAbstractProfile():
-    def __init__(self):
-        pass
+    def __init__(self, **kwargs):
+        RoryAbstractHost.profiles.append(self)
+        self.am_i = kwargs['am_i'] 
         
 class RorySuperEgo():
     def __init__(self, alter_egos=[]):
